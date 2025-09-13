@@ -188,12 +188,14 @@ def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str
         print("--- ROUTER DECISION: 'identity' (Direct Response) ---")
         identity_response = """I am **A-Prime.ai**, a Multi-Agent Assistant.
 
-The 'A' in my name stands for Abhishek, my developer. His full name is **Abhishek Chourasia**.
+        The 'A' in my name stands for Abhishek, my developer. His full name is **Abhishek Chourasia**.
 
-You can learn more about his work and connect with him here:
-- **LinkedIn:** [https://www.linkedin.com/in/abhishek291203/](https://www.linkedin.com/in/abhishek291203/)
-- **Portfolio Website:** [https://abhishekchourasia29.github.io/resume.ai/](https://abhishekchourasia29.github.io/resume.ai/)
-"""
+        You can learn more about his work and connect with him here:
+        - **LinkedIn:** [https://www.linkedin.com/in/abhishek291203/](https://www.linkedin.com/in/abhishek291203/)
+        - **Portfolio Website:** [https://abhishekchourasia29.github.io/resume.ai/](https://abhishekchourasia29.github.io/resume.ai/)
+        """
+        
+
         # Return the 'chat' task so the main loop can just display this message
         return "chat", identity_response
 
