@@ -6,3 +6,4 @@ requests
 groq
 tavily-python
 pymongo
+gunicorn==23.0.0
