@@ -49,10 +49,12 @@ def _load_identity_context():
     """Loads the identity context from the file into a global variable at startup."""
     global IDENTITY_CONTEXT
     try:
-        # Assumes 'identity_context.txt' is in the same directory as this script.
-        # If your file structure is different, you might need to adjust the path.
-        # For example: with open("app/identity_context.txt", "r", encoding="utf-8") as f:
-        with open("identity_context.txt", "r", encoding="utf-8") as f:
+        # Construct a path to the file relative to this script's location
+        # This is the ROBUST way to handle file paths in applications
+        script_dir = os.path.dirname(__file__)
+        file_path = os.path.join(script_dir, "identity_context.txt")
+        
+        with open(file_path, "r", encoding="utf-8") as f:
             IDENTITY_CONTEXT = f.read()
         print("Identity context loaded successfully into memory.")
     except FileNotFoundError:
