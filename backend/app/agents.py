@@ -43,6 +43,24 @@ if STABILITY_API_KEY:
 else:
     print("STABILITY_API_KEY environment variable not found. Stability AI image generation will be disabled.")
 
+# --- Pre-load Identity Context for Performance ---
+IDENTITY_CONTEXT = ""
+def _load_identity_context():
+    """Loads the identity context from the file into a global variable at startup."""
+    global IDENTITY_CONTEXT
+    try:
+        # Assumes 'identity_context.txt' is in the same directory as this script.
+        # If your file structure is different, you might need to adjust the path.
+        # For example: with open("app/identity_context.txt", "r", encoding="utf-8") as f:
+        with open("identity_context.txt", "r", encoding="utf-8") as f:
+            IDENTITY_CONTEXT = f.read()
+        print("Identity context loaded successfully into memory.")
+    except FileNotFoundError:
+        print("WARNING: identity_context.txt not found. Identity agent will be disabled.")
+        IDENTITY_CONTEXT = None
+
+_load_identity_context() # Load the context when the module is first imported.
+
 
 # --- Helper function to clean history ---
 def _clean_history_for_api(history: list[dict]) -> list[dict]:
@@ -51,7 +69,7 @@ def _clean_history_for_api(history: list[dict]) -> list[dict]:
     for message in history:
         cleaned_history.append({
             "role": message.get("role"),
-            "content": message.get("content") or message.get("text") # Handle both 'content' and 'text'
+            "content": message.get("content") or message.get("text")
         })
     return cleaned_history
 
@@ -60,7 +78,6 @@ def _call_groq(messages, model="gemma2-9b-it"):
     if not groq_client:
         raise Exception("Groq client is not initialized. Check your API key.")
     
-    # Clean the messages right before sending them to the API
     cleaned_messages = _clean_history_for_api(messages)
     
     return groq_client.chat.completions.create(
@@ -75,6 +92,27 @@ def general_chat(chat_history: list[dict]) -> str:
         return completion.choices[0].message.content
     except Exception as e:
         return f"Error: Could not process chat. {e}"
+
+def answer_identity_question(query: str) -> str:
+    """Answers questions about the AI's identity using the pre-loaded knowledge."""
+    if not IDENTITY_CONTEXT:
+        return "Error: The identity context is not loaded. I cannot answer questions about myself right now."
+    
+    try:
+        system_prompt = """You are A-Prime.ai, a helpful and professional Multi-Agent Assistant. Your developer is Abhishek Chourasia.
+Answer the user's question based *only* on the provided context about your developer and your own architecture.
+Be friendly, professional, and concise. Format your response clearly using markdown for readability.
+Directly provide the portfolio and LinkedIn links when relevant."""
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Context:\n{IDENTITY_CONTEXT}\n\nQuestion: {query}"}
+        ]
+        
+        completion = _call_groq(messages)
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: Could not process identity question. {e}"
 
 def summarize_text(text: str) -> str:
     """Summarizes the given text using the Groq API."""
@@ -125,7 +163,6 @@ def simple_groq_search(query: str) -> str:
         return completion.choices[0].message.content
     except Exception as e:
         return f"Error: Could not get a response from Groq. {e}"
-
 
 def answer_question(context: str, query: str) -> str:
     """Answers a question based on provided context using the Groq API."""
@@ -178,36 +215,30 @@ def generate_image(prompt: str) -> str:
 
 def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str]:
     """
-    Routes the user's prompt to the correct agent or provides a direct response.
-    Returns a tuple of (task_name, content_for_agent).
+    Routes the user's prompt to the correct agent.
     """
-    # --- Identity Check (Hardcoded for immediate response) ---
-    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "who is your creator", "who create you", "who make you"]
+    # --- Identity Check (Hardcoded keyword check) ---
+    identity_keywords = [
+        "who are you", "what are you", "your name", "who built you", 
+        "who developed you", "who is your creator", "who create you", 
+        "who make you", "tell me about yourself", "your purpose"
+    ]
     if any(keyword in user_prompt.lower() for keyword in identity_keywords):
-        print("--- ROUTER DECISION: 'identity' (Direct Response) ---")
-        identity_response = """I am **A-Prime.ai**, a Multi-Agent Assistant.
-
-The 'A' in my name stands for Abhishek, my developer. His full name is **Abhishek Chourasia**.
-
-You can learn more about his work and connect with him here:
-- **LinkedIn:** [https://www.linkedin.com/in/abhishek291203/](https://www.linkedin.com/in/abhishek291203/)
-- **Portfolio Website:** [https://abhishekchourasia29.github.io/resume.ai/](https://abhishekchourasia29.github.io/resume.ai/)
-"""
-        # Return the 'identity' task and the pre-made response
-        return "identity", identity_response
+        print("--- ROUTER DECISION: 'identity' ---")
+        return "identity", user_prompt
 
     # --- LLM-based Routing for other tasks ---
     system_prompt = """You are an extremely efficient routing assistant. Your only purpose is to analyze a user's prompt and classify it into one of the following categories.
     Respond with ONLY ONE single word. Do not add any explanation, punctuation, or any other text.
 
     The categories are:
-    - 'summarize' (For requests to shorten or condense text)
-    - 'tavily_search' (For questions about current events, real-time information, news, or if explicitly asked to search the web)
-    - 'groq_search' (For general knowledge questions like historical facts or common science)
-    - 'qna' (For answering a question based on previous conversation context)
-    - 'code' (For requests to write or explain programming code)
-    - 'image' (For requests to generate an image)
-    - 'chat' (For all other general conversation, greetings, or unclear requests)
+    - 'summarize'
+    - 'tavily_search'
+    - 'groq_search'
+    - 'qna'
+    - 'code'
+    - 'image'
+    - 'chat'
 
     Your response MUST be one of the single words from the list above.
     """
@@ -224,10 +255,10 @@ You can learn more about his work and connect with him here:
 
         valid_tasks = ["summarize", "tavily_search", "groq_search", "qna", "code", "image", "chat"]
         if task in valid_tasks:
-            return task, user_prompt # Return the original prompt for the agent to use
+            return task, user_prompt
         else:
-            # Fallback for safety if the LLM gives an unexpected response
             return "chat", user_prompt
     except Exception as e:
         print(f"Error calling LLM for intent recognition: {e}. Defaulting to 'chat'.")
         return "chat", user_prompt
+
