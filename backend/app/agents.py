@@ -178,26 +178,23 @@ def generate_image(prompt: str) -> str:
 
 def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str]:
     """
-    Routes the user's prompt. It can either return a task name (str) or a direct answer (str).
-    Now includes a hardcoded check for identity questions.
+    Routes the user's prompt to the correct agent or provides a direct response.
+    Returns a tuple of (task_name, content_for_agent).
     """
     # --- Identity Check (Hardcoded for immediate response) ---
-    # NOTE: Please replace the placeholder links with the actual URLs.
-    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "who is your creator"]
+    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "who is your creator", "who create you", "who make you"]
     if any(keyword in user_prompt.lower() for keyword in identity_keywords):
         print("--- ROUTER DECISION: 'identity' (Direct Response) ---")
         identity_response = """I am **A-Prime.ai**, a Multi-Agent Assistant.
 
-        The 'A' in my name stands for Abhishek, my developer. His full name is **Abhishek Chourasia**.
+The 'A' in my name stands for Abhishek, my developer. His full name is **Abhishek Chourasia**.
 
-        You can learn more about his work and connect with him here:
-        - **LinkedIn:** [https://www.linkedin.com/in/abhishek291203/](https://www.linkedin.com/in/abhishek291203/)
-        - **Portfolio Website:** [https://abhishekchourasia29.github.io/resume.ai/](https://abhishekchourasia29.github.io/resume.ai/)
-        """
-        
-
-        # Return the 'chat' task so the main loop can just display this message
-        return "chat", identity_response
+You can learn more about his work and connect with him here:
+- **LinkedIn:** [https://www.linkedin.com/in/abhishek291203/](https://www.linkedin.com/in/abhishek291203/)
+- **Portfolio Website:** [https://abhishekchourasia29.github.io/resume.ai/](https://abhishekchourasia29.github.io/resume.ai/)
+"""
+        # Return the 'identity' task and the pre-made response
+        return "identity", identity_response
 
     # --- LLM-based Routing for other tasks ---
     system_prompt = """You are an extremely efficient routing assistant. Your only purpose is to analyze a user's prompt and classify it into one of the following categories.
@@ -229,43 +226,8 @@ def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str
         if task in valid_tasks:
             return task, user_prompt # Return the original prompt for the agent to use
         else:
-            # Fallback for safety
+            # Fallback for safety if the LLM gives an unexpected response
             return "chat", user_prompt
     except Exception as e:
         print(f"Error calling LLM for intent recognition: {e}. Defaulting to 'chat'.")
         return "chat", user_prompt
-
-# Example of how you might use this in a main loop
-if __name__ == '__main__':
-    # This is a simplified example loop to show how the functions work together.
-    chat_history = []
-    while True:
-        user_input = input("You: ")
-        if user_input.lower() in ['exit', 'quit']:
-            break
-
-        chat_history.append({"role": "user", "content": user_input})
-        
-        # The router now returns the task and the content to be processed
-        task, content = route_to_agent(user_input, chat_history)
-
-        response = ""
-        if task == "chat":
-            # If the router returned the identity response, 'content' will be that response.
-            # Otherwise, it's a general chat.
-            if "A-Prime.ai" in content:
-                 response = content
-            else:
-                 response = general_chat(chat_history)
-        elif task == "tavily_search":
-            response = tavily_search(content)
-        elif task == "groq_search":
-            response = simple_groq_search(content)
-        elif task == "code":
-            response = generate_code(content)
-        elif task == "image":
-            response = generate_image(content)
-        # Add other task handlers here...
-        
-        print(f"A-Prime.ai: {response}")
-        chat_history.append({"role": "assistant", "content": response})
