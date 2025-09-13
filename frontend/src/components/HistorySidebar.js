@@ -1,19 +1,27 @@
 import React from 'react';
-import ThemeToggle from './ThemeToggle'; // Import the new component
+import ThemeToggle from './ThemeToggle'; 
 
-const HistorySidebar = ({ sessions, onSessionClick, onNewChat, activeSessionId, onDeleteSession, theme, toggleTheme }) => {
+// Accept the new isSidebarOpen prop
+const HistorySidebar = ({ 
+    sessions, 
+    onSessionClick, 
+    onNewChat, 
+    activeSessionId, 
+    onDeleteSession, 
+    theme, 
+    toggleTheme,
+    isSidebarOpen 
+}) => {
 
     const handleDelete = (e, sessionId) => {
         e.stopPropagation();
-        // IMPORTANT: Replaced window.confirm with a direct call for demonstration.
-        // In a real application, you would implement a custom modal for confirmation
-        // as per the guidelines to avoid browser's alert/confirm dialogs.
         console.log(`Attempting to delete session: ${sessionId}`);
         onDeleteSession(sessionId);
     };
 
     return (
-        <aside className="history-sidebar">
+        // Add the dynamic 'open' class based on the prop
+        <aside className={`history-sidebar ${isSidebarOpen ? 'open' : ''}`}>
             <div className="history-sidebar-header">
                 <button className="new-chat-button" onClick={onNewChat}>
                     + New Chat
