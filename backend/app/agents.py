@@ -181,7 +181,7 @@ def route_to_agent(user_prompt: str) -> str:
     """
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     try:
-        completion = _call_groq(messages, model="llama3-8b-8192") # Use a fast model for routing
+        completion = _call_groq(messages, model="gemma2-9b-it") # Use a fast model for routing
         task = completion.choices[0].message.content.strip().lower().replace("'", "").replace(".", "")
         print(f"--- ROUTER DECISION: '{task}' ---")
 
