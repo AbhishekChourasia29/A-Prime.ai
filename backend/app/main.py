@@ -1,29 +1,40 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-# Assuming your 'agents.py' and 'memory.py' are in a folder named 'app'
 from app import agents, memory 
-from typing import Optional
+from typing import Optional, Callable, Any
 
 app = FastAPI()
 
 # --- Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"], # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], # Allows all methods
-    allow_headers=["*"], # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # --- Pydantic Models ---
-
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
 
-# --- API Endpoints ---
+# --- Helper Functions ---
+def _get_or_create_session(session_id: Optional[str]) -> tuple[str, bool]:
+    """Gets an existing session or creates a new one."""
+    if not session_id or memory.get_session_title(session_id) is None:
+        new_session = new_chat()
+        return new_session["session_id"], True
+    return session_id, memory.get_session_title(session_id) == "New Chat"
 
+def _update_session_title(session_id: str, first_message: str):
+    """Updates the session title based on the first user message."""
+    title = first_message[:50].strip() + ("..." if len(first_message) > 50 else "")
+    memory.update_session_title(session_id, title)
+    return title
+
+# --- API Endpoints ---
 @app.get("/api/sessions")
 def get_sessions():
     """Gets a list of all chat sessions."""
@@ -37,91 +48,68 @@ def new_chat():
 
 @app.get("/api/chat_history/{session_id}")
 def get_chat_history(session_id: str):
-    """Gets the chat history for a specific session."""
+    """Gets the formatted chat history for a specific session."""
     history = memory.get_history(session_id)
-    # Format history for the frontend
-    formatted_history = []
-    for msg in history:
-        formatted_msg = {
+    return [
+        {
             "id": msg.get('id'), 
             "role": msg.get('role'),
             "text": msg.get('content'),
-            "timestamp": msg.get('timestamp')
-        }
-        if "data:image" in msg.get('content', ''):
-            formatted_msg["isImage"] = True
-        if "```" in msg.get('content', ''):
-            formatted_msg["isCode"] = True
-        formatted_history.append(formatted_msg)
-    return formatted_history
-
+            "timestamp": msg.get('timestamp'),
+            "isImage": "data:image" in msg.get('content', ''),
+            "isCode": "```" in msg.get('content', '')
+        } for msg in history
+    ]
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    user_message = request.message
-    session_id = request.session_id
-
-    if not session_id:
-        session_data = new_chat()
-        session_id = session_data["session_id"]
-        should_update_title = True
-    else:
-        current_session_title = memory.get_session_title(session_id)
-        should_update_title = current_session_title == "New Chat"
-
+    """Main endpoint to handle user messages and route to the correct agent."""
+    session_id, should_update_title = _get_or_create_session(request.session_id)
     chat_history = memory.get_history(session_id)
     
-    temp_history_for_agent = [{"role": msg['role'], "content": msg['content']} for msg in chat_history]
-    temp_history_for_agent.append({"role": "user", "content": user_message})
-
-    # --- UPDATED AND CORRECTED LOGIC ---
-    task, content = agents.route_to_agent(user_message, temp_history_for_agent)
+    # Prepare history for agent context
+    full_history = chat_history + [{"role": "user", "content": request.message}]
     
-    response_text = ""
+    task, content = agents.route_to_agent(request.message, full_history)
+    
+    # --- OPTIMIZED AGENT DISPATCHER ---
+    # This dictionary maps tasks to their corresponding agent functions.
+    # It's more efficient and scalable than a long if/elif/else chain.
+    agent_dispatcher: dict[str, Callable[..., Any]] = {
+        "identity": agents.answer_identity_question,
+        "tavily_search": agents.tavily_search,
+        "groq_search": agents.simple_groq_search,
+        "code": agents.generate_code,
+        "image": agents.generate_image,
+        "summarize": lambda: agents.summarize_text(chat_history[-1]['content'] if chat_history else content),
+        "qna": lambda: agents.answer_question(chat_history[-1]['content'] if chat_history else "", content),
+        "chat": lambda: agents.general_chat(full_history)
+    }
 
-    if task == "identity":
-        # Call the dedicated identity agent function
-        response_text = agents.answer_identity_question(content)
-    elif task == "summarize":
-        context_for_summary = temp_history_for_agent[-2]['content'] if len(temp_history_for_agent) > 1 else content
-        response_text = agents.summarize_text(context_for_summary)
-    elif task == "tavily_search":
-        response_text = agents.tavily_search(content)
-    elif task == "groq_search":
-        response_text = agents.simple_groq_search(content)
-    elif task == "qna":
-        context_for_qna = temp_history_for_agent[-2]['content'] if len(temp_history_for_agent) > 1 else ""
-        response_text = agents.answer_question(context_for_qna, content)
-    elif task == "code":
-        response_text = agents.generate_code(content)
-    elif task == "image":
-        response_text = agents.generate_image(content)
-    else: # 'chat' or if routing fails
-        response_text = agents.general_chat(temp_history_for_agent)
+    # Get the agent function from the dispatcher, defaulting to 'chat'
+    agent_function = agent_dispatcher.get(task, agent_dispatcher["chat"])
+    
+    # Execute the chosen agent function
+    # The lambda functions are called here, others are called with 'content' if needed.
+    if task in ["summarize", "qna", "chat"]:
+        response_text = agent_function()
+    else:
+        response_text = agent_function(content)
 
-    # Save user message and assistant response to history
-    memory.add_to_history(session_id, "user", user_message)
+    # --- Persist and Respond ---
+    memory.add_to_history(session_id, "user", request.message)
     memory.add_to_history(session_id, "assistant", response_text)
 
-    # Update session title if this is the first real message
-    new_title = None
-    if should_update_title and user_message:
-        suggested_title = user_message[:50].strip()
-        if len(user_message) > 50:
-            suggested_title += "..."
-        memory.update_session_title(session_id, suggested_title)
-        new_title = suggested_title
-
     response_payload = {"response": response_text, "session_id": session_id}
-    if new_title:
-        response_payload["new_title"] = new_title
+    if should_update_title and request.message:
+        response_payload["new_title"] = _update_session_title(session_id, request.message)
         
     return response_payload
 
 @app.delete("/api/sessions/{session_id}")
 def delete_session(session_id: str):
     """Deletes a chat session by its ID."""
-    if memory.delete_session(session_id):
-        return {"message": "Session deleted successfully."}
-    raise HTTPException(status_code=404, detail="Session not found.")
+    if not memory.delete_session(session_id):
+        raise HTTPException(status_code=404, detail="Session not found.")
+    return {"message": "Session deleted successfully."}
 
