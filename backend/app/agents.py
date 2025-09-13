@@ -3,173 +3,244 @@ import requests
 import base64
 import groq
 from dotenv import load_dotenv
+import re
 from tavily import TavilyClient
 
 load_dotenv()
 
-# --- API Client Initializations ---
-groq_client = groq.Groq(api_key=os.getenv("GROQ_API_KEY")) if os.getenv("GROQ_API_KEY") else None
-tavily_client = TavilyClient(api_key=os.getenv("TAVILY_API_KEY")) if os.getenv("TAVILY_API_KEY") else None
-STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+# --- Global API Client Initializations ---
+
+# Define Stability AI API URL as a plain string constant
 STABILITY_API_BASE_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 
-# --- Pre-load Identity Context for Performance ---
-IDENTITY_CONTEXT = ""
-def _load_identity_context():
-    global IDENTITY_CONTEXT
+# Groq Client
+groq_client = None
+try:
+    groq_client = groq.Groq(api_key=os.getenv("GROQ_API_KEY"))
+    print("Groq client initialized successfully.")
+except Exception as e:
+    print(f"Could not initialize Groq client: {e}")
+    groq_client = None
+
+# Tavily Client
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+tavily_client = None
+if TAVILY_API_KEY:
     try:
-        script_dir = os.path.dirname(__file__)
-        file_path = os.path.join(script_dir, "identity_context.txt")
-        with open(file_path, "r", encoding="utf-8") as f:
-            IDENTITY_CONTEXT = f.read()
-        print("Identity context loaded successfully.")
-    except FileNotFoundError:
-        print("WARNING: identity_context.txt not found. Identity agent is disabled.")
-        IDENTITY_CONTEXT = None
-_load_identity_context()
+        tavily_client = TavilyClient(api_key=TAVILY_API_KEY)
+        print("Tavily client initialized successfully.")
+    except Exception as e:
+        print(f"Error initializing Tavily client: {e}")
+else:
+    print("TAVILY_API_KEY environment variable not set. Tavily search functionality will be limited or disabled.")
 
-# --- Centralized System Prompts ---
-SYSTEM_PROMPTS = {
-    "identity": """You are A-Prime.ai, a helpful and professional Multi-Agent Assistant. Your developer is Abhishek Chourasia.
-Answer the user's question based *only* on the provided context about your developer and your own architecture.
-Be friendly, professional, and concise. Format your response clearly using markdown and directly provide portfolio and LinkedIn links when relevant.""",
-    "summarize": "You are a helpful assistant that summarizes text concisely.",
-    "tavily_search": "You are a web search assistant. Answer the user's query professionally and concisely based *only* on the provided web search results. Cite your sources if possible. If the context does not contain the answer, state that you couldn't find the information.",
-    "groq_search": "You are a helpful assistant that answers questions concisely and accurately from your existing knowledge. Do not perform a web search.",
-    "qna": "You are a helpful assistant that answers questions based on the provided conversation context.",
-    "code": "You are a helpful assistant that generates code. Provide the code within triple backticks (e.g., ```python).",
-    "router": """You are an extremely efficient routing assistant. Your purpose is to classify a user's prompt into a single category.
-Respond with ONLY ONE word from this list: identity, summarize, tavily_search, groq_search, qna, code, image, chat."""
-}
+# Stability AI API Key Status
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
+stability_api_status = False
+if STABILITY_API_KEY:
+    stability_api_status = True
+    print("Stability AI API key loaded successfully.")
+else:
+    print("STABILITY_API_KEY environment variable not found. Stability AI image generation will be disabled.")
 
-# --- Core Agent Functions ---
 
-def _clean_history_for_groq(history: list[dict]) -> list[dict]:
-    """Removes any keys from the history that are not 'role' or 'content' to comply with the API."""
-    return [{"role": msg.get("role"), "content": msg.get("content")} for msg in history]
+# --- Helper function to clean history ---
+def _clean_history_for_api(history: list[dict]) -> list[dict]:
+    """Removes any keys from the history that are not 'role' or 'content'. Converts 'text' to 'content'."""
+    cleaned_history = []
+    for message in history:
+        cleaned_history.append({
+            "role": message.get("role"),
+            "content": message.get("content") or message.get("text") # Handle both 'content' and 'text'
+        })
+    return cleaned_history
 
 def _call_groq(messages, model="gemma2-9b-it"):
-    """Helper function to call the Groq API with robust error handling and history cleaning."""
-    if not groq_client: raise ValueError("Groq API key is not configured.")
+    """Helper function to call the Groq API and handle exceptions."""
+    if not groq_client:
+        raise Exception("Groq client is not initialized. Check your API key.")
     
-    cleaned_messages = _clean_history_for_groq(messages)
+    # Clean the messages right before sending them to the API
+    cleaned_messages = _clean_history_for_api(messages)
+    
+    return groq_client.chat.completions.create(
+        messages=cleaned_messages,
+        model=model,
+    )
 
+def general_chat(chat_history: list[dict]) -> str:
+    """Handles general chat queries using the Groq API."""
     try:
-        return groq_client.chat.completions.create(messages=cleaned_messages, model=model)
+        completion = _call_groq(chat_history)
+        return completion.choices[0].message.content
     except Exception as e:
-        print(f"Groq API call failed: {e}")
-        raise
-
-def answer_identity_question(query: str) -> str:
-    """Answers questions about the AI's identity using pre-loaded context."""
-    if not IDENTITY_CONTEXT: return "I'm sorry, my identity context is not available right now."
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["identity"]},
-        {"role": "user", "content": f"Context:\n{IDENTITY_CONTEXT}\n\nQuestion: {query}"}
-    ]
-    completion = _call_groq(messages)
-    return completion.choices[0].message.content
+        return f"Error: Could not process chat. {e}"
 
 def summarize_text(text: str) -> str:
-    """Summarizes text using the Groq API."""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["summarize"]},
-        {"role": "user", "content": f"Summarize the following text: {text}"}
-    ]
-    completion = _call_groq(messages)
-    return completion.choices[0].message.content
-
-def tavily_search(query: str) -> str:
-    """Performs a web search with Tavily and summarizes results with Groq."""
-    if not tavily_client: return "Error: Tavily API key is not configured for web search."
+    """Summarizes the given text using the Groq API."""
     try:
-        response = tavily_client.search(query=query, search_depth="basic", include_answer=True, max_results=5)
-        if response.get("answer"): return response["answer"]
-        
-        context = " ".join([r["content"] for r in response.get("results", []) if r.get("content")])
-        if not context: return "I searched online, but couldn't find any relevant information to answer your question."
-
         messages = [
-            {"role": "system", "content": SYSTEM_PROMPTS["tavily_search"]},
-            {"role": "user", "content": f"Web Search Results: {context}\n\nBased on these results, please answer the query: '{query}'"}
+            {"role": "system", "content": "You are a helpful assistant that summarizes text concisely."},
+            {"role": "user", "content": f"Summarize the following text: {text}"}
         ]
         completion = _call_groq(messages)
         return completion.choices[0].message.content
     except Exception as e:
-        print(f"Tavily search failed: {e}")
-        return "Sorry, I encountered an error while searching the web. Please try again."
+        return f"Error: Could not summarize text. {e}"
+
+def tavily_search(query: str) -> str:
+    """Searches the web for the given query using Tavily API."""
+    if not tavily_client:
+        return "Error: Tavily API Key is not configured for web search. Please set TAVILY_API_KEY."
+    try:
+        # Using Tavily's search endpoint to get concise results for LLMs
+        response = tavily_client.search(query=query, search_depth="basic", include_answer=True)
+        
+        # Tavily often provides an 'answer' directly, which is great for LLMs
+        if response.get("answer"):
+            return response["answer"]
+        
+        # If no direct answer, compile snippets from results
+        snippets = []
+        if response.get("results"):
+            for result in response["results"]:
+                if result.get("content"):
+                    snippets.append(result["content"])
+        
+        if not snippets:
+            return "Sorry, I couldn't find any relevant information online using Tavily."
+        
+        context = " ".join(snippets)
+        
+        # Use Groq to answer based on search results
+        messages = [
+            {"role": "system", "content": "Answer based *only* on the provided search snippets. If you cannot answer, say no."},
+            {"role": "user", "content": f"Search Results: {context}\n\nBased on the above, answer: {query}"}
+        ]
+        completion = _call_groq(messages)
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: Failed to search the web using Tavily. {e}"
 
 def simple_groq_search(query: str) -> str:
-    """Answers a general knowledge question using Groq."""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["groq_search"]},
-        {"role": "user", "content": query}
-    ]
-    completion = _call_groq(messages)
-    return completion.choices[0].message.content
+    """
+    Answers a question based on Groq's internal knowledge without a web search.
+    """
+    try:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that answers questions concisely and accurately from your existing knowledge. Do not perform a web search."},
+            {"role": "user", "content": f"Answer the following question: {query}"}
+        ]
+        completion = _call_groq(messages)
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: Could not get a response from Groq. {e}"
+
 
 def answer_question(context: str, query: str) -> str:
-    """Answers a question based on conversation history."""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["qna"]},
-        {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"}
-    ]
-    completion = _call_groq(messages)
-    return completion.choices[0].message.content
+    """Answers a question based on provided context using the Groq API."""
+    try:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that answers questions based on provided context."},
+            {"role": "user", "content": f"Context: {context}\n\nQuestion: {query}"}
+        ]
+        completion = _call_groq(messages)
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: Could not answer question. {e}"
 
 def generate_code(prompt: str) -> str:
-    """Generates code using the Groq API."""
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["code"]},
-        {"role": "user", "content": prompt}
-    ]
-    completion = _call_groq(messages)
-    return completion.choices[0].message.content
-
-def general_chat(chat_history: list[dict]) -> str:
-    """Handles general conversation."""
-    completion = _call_groq(chat_history)
-    return completion.choices[0].message.content
+    """Generates code based on the given prompt using the Groq API."""
+    try:
+        messages = [
+            {"role": "system", "content": "You are a helpful assistant that generates code. Provide code within triple backticks (```python)."},
+            {"role": "user", "content": f"Generate code for: {prompt}"}
+        ]
+        completion = _call_groq(messages)
+        return completion.choices[0].message.content
+    except Exception as e:
+        return f"Error: Could not generate code. {e}"
 
 def generate_image(prompt: str) -> str:
-    """Generates an image using the Stability AI API."""
-    if not STABILITY_API_KEY: return "Error: Stability AI API key not found. Image generation is disabled."
+    """Generates an image based on the given prompt using Stability AI API."""
+    global stability_api_status # Access the global status variable
+    if not stability_api_status:
+        return "Error: Stability AI API key not found. Image generation is disabled."
+    
     try:
         response = requests.post(
-            STABILITY_API_BASE_URL,
-            headers={"authorization": f"Bearer {STABILITY_API_KEY}", "accept": "image/*"},
+            STABILITY_API_BASE_URL, # Using the global constant here
+            headers={
+                "authorization": f"Bearer {STABILITY_API_KEY}",
+                "accept": "image/*"
+            },
             files={"prompt": (None, prompt), "output_format": (None, "png")},
         )
-        response.raise_for_status()
-        base64_image = base64.b64encode(response.content).decode('utf-8')
+        response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+        image_bytes = response.content
+        base64_image = base64.b64encode(image_bytes).decode('utf-8')
         return f"data:image/png;base64,{base64_image}"
-    except requests.exceptions.HTTPError as e:
-        print(f"Stability AI HTTP Error: {e.response.text}")
-        return f"Error: Failed to generate image due to an API issue (Status {e.response.status_code}). Please check the prompt or API key."
-    except requests.exceptions.RequestException as e:
-        print(f"Stability AI Connection Error: {e}")
-        return "Error: Could not connect to the image generation service. Please check your network connection."
+    except requests.exceptions.RequestException as req_e:
+        return f"Error: Failed to connect to Stability AI API. Network or API issue: {req_e}"
+    except Exception as e:
+        print(f"API Error in generate_image: {e}")
+        return f"Error: Could not generate the image using Stability AI. {e}"
 
-def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str]:
-    """Routes the user's prompt to the correct agent using a multi-layer approach."""
-    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "creator", "create you", "make you", "about yourself", "your purpose"]
-    if any(keyword in user_prompt.lower() for keyword in identity_keywords):
-        return "identity", user_prompt
+def route_to_agent(user_prompt: str, chat_history: list[dict]) -> str:
+    """
+    Routes the user's prompt to the appropriate agent based on LLM-based intent recognition.
+    """
+    system_prompt = """
+        You are **A-Prime.ai**, a helpful and professional Multi-Agent Assistant.
+        Your developer is **Abhishek Chourasia**.
+        Answer the user's questions based *only* on the provided context about your developer and your own architecture.
+        Be friendly, professional, and concise. Format your responses clearly using **markdown**.
 
-    web_search_keywords = ["latest", "current", "today's news", "what is the price of", "what is the stock", "search for", "find information on"]
-    if any(keyword in user_prompt.lower() for keyword in web_search_keywords):
-        return "tavily_search", user_prompt
+        When asked for links, always provide these specific ones:
+        - LinkedIn: https://www.linkedin.com/in/abhishek291203/
+        - Portfolio: https://abhishekchourasia29.github.io/resume.ai/
 
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPTS["router"]},
+        The categories are:
+        - 'summarize' (For requests to shorten or condense text provided by previous responses)
+        - 'tavily_search' (For any questions about **current events, real-time information, news, or explicit search requests with keywords like 'search', 'find', 'latest', or 'current'**)
+        - 'groq_search' (For questions answered from general knowledge, such as historical facts or common science, without a web search)
+        - 'qna' (For answering questions based on previous conversation context)
+        - 'code' (For requests to generate or explain programming code)
+        - 'image' (For requests to generate an image)
+        - 'chat' (For general conversation, greetings, or unclear requests)
+
+        You are an extremely efficient routing assistant.
+        Your name is **A-Prime.ai**, developed by **Abhishek Chourasia**.
+        Your only purpose is to analyze a user's prompt and classify it into exactly one of the categories listed above.
+        Respond with ONLY ONE SINGLE WORD. Do not add explanations, punctuation, or any other text.
+    """
+
+
+    messages_for_intent = [
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt}
     ]
-    try:
-        completion = _call_groq(messages)
-        task = completion.choices[0].message.content.strip().lower().replace("'", "")
-        valid_tasks = ["summarize", "tavily_search", "groq_search", "qna", "code", "image", "chat"]
-        return task if task in valid_tasks else "chat", user_prompt
-    except Exception as e:
-        print(f"Router LLM call failed: {e}. Defaulting to chat.")
-        return "chat", user_prompt
 
+    try:
+        completion = _call_groq(messages_for_intent, model="gemma2-9b-it")
+        
+        task = completion.choices[0].message.content.strip().lower()
+        print(f"--- ROUTER DECISION: '{task}' ---")
+
+        valid_tasks = ["summarize", "tavily_search", "groq_search", "qna", "code", "image", "chat"]
+        
+        if task in valid_tasks:
+            return task
+        else:
+            print(f"LLM returned invalid task: '{task}'. Using fallback logic.")
+            # Fallback logic for common keywords
+            if "image" in user_prompt.lower(): return "image"
+            if "news" in user_prompt.lower() or "latest" in user_prompt.lower() or "current" in user_prompt.lower() or "search" in user_prompt.lower(): return "tavily_search"
+            if "summarize" in user_prompt.lower(): return "summarize"
+            if "code" in user_prompt.lower(): return "code"
+            if "who is" in user_prompt.lower() or "what is" in user_prompt.lower() or "web search" is user_prompt.lower(): return "groq_search"
+            return "chat"
+            
+    except Exception as e:
+        print(f"Error calling LLM for intent recognition: {e}. Defaulting to 'chat'.")
+        return "chat"

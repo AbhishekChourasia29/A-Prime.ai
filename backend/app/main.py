@@ -1,119 +1,140 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from app import agents, memory
-from typing import Optional, Callable, Any
+from app import agents, memory 
+import re
+from typing import Optional
 
 app = FastAPI()
 
 # --- App Lifecycle Events ---
-@app.on_event("startup")
-async def startup_event():
-    """Initializes the database connection when the application starts."""
-    memory.init_db()
-
-@app.on_event("shutdown")
-def shutdown_event():
-    """Closes the database connection when the application shuts down."""
-    memory.close_db_connection()
-
-# --- Constants ---
-MAX_HISTORY_LENGTH = 20
+# MongoDB connection is typically handled on demand or lazy-loaded,
+# so explicit startup/shutdown events for connection are less critical
+# than for SQLite. The connection will be established on the first DB call.
 
 # --- Middleware ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"], # Allows all origins
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"], # Allows all methods (GET, POST, PUT, DELETE, etc.)
+    allow_headers=["*"], # Allows all headers
 )
 
 # --- Pydantic Models ---
+
 class ChatRequest(BaseModel):
     message: str
-    session_id: Optional[str] = None
-
-# --- Helper Functions (No changes needed) ---
-def _get_or_create_session(session_id: Optional[str]) -> tuple[str, bool]:
-    if not session_id or memory.get_session_title(session_id) is None:
-        new_session_id = memory.create_new_session()
-        return new_session_id, True
-    return session_id, memory.get_session_title(session_id) == "New Chat"
-
-def _update_session_title(session_id: str, first_message: str):
-    title = first_message[:50].strip() + ("..." if len(first_message) > 50 else "")
-    memory.update_session_title(session_id, title)
-    return title
+    session_id: Optional[str] = None # Make session_id optional for new chats
 
 # --- API Endpoints ---
+
 @app.get("/api/sessions")
 def get_sessions():
+    """Gets a list of all chat sessions for the history sidebar."""
     return memory.get_all_sessions()
 
 @app.post("/api/new_chat")
 def new_chat():
+    """Creates a new chat session."""
     session_id = memory.create_new_session()
     return {"session_id": session_id, "title": "New Chat"}
 
 @app.get("/api/chat_history/{session_id}")
 def get_chat_history(session_id: str):
+    """Gets the chat history for a specific session."""
     history = memory.get_history(session_id)
-    return [
-        {
-            "id": msg.get('id'), 
+    # The frontend expects 'id', 'role', 'text' (or 'content' mapped to 'text')
+    # and potentially 'isImage', 'isCode'.
+    # Ensure 'content' is mapped to 'text' for the frontend.
+    formatted_history = []
+    for msg in history:
+        formatted_msg = {
+            "id": msg.get('id'), # MongoDB _id converted to string
             "role": msg.get('role'),
             "text": msg.get('content'),
-            "timestamp": msg.get('timestamp'),
-            "isImage": "data:image" in msg.get('content', ''),
-            "isCode": "```" in msg.get('content', '')
-        } for msg in history
-    ]
+            "timestamp": msg.get('timestamp') # Include timestamp
+        }
+        # Add flags for image/code if they were stored this way
+        if "data:image" in msg.get('content', ''):
+            formatted_msg["isImage"] = True
+        if "```python" in msg.get('content', '') and "```" in msg.get('content', ''):
+            formatted_msg["isCode"] = True
+        formatted_history.append(formatted_msg)
+    return formatted_history
+
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest):
-    session_id, should_update_title = _get_or_create_session(request.session_id)
-    chat_history = memory.get_history(session_id)
-    
-    truncated_history = chat_history[-MAX_HISTORY_LENGTH:]
-    full_history = truncated_history + [{"role": "user", "content": request.message}]
-    
-    task, content = agents.route_to_agent(request.message, full_history)
-    
-    agent_dispatcher: dict[str, Callable[..., Any]] = {
-        "identity": agents.answer_identity_question,
-        "tavily_search": agents.tavily_search,
-        "groq_search": agents.simple_groq_search,
-        "code": agents.generate_code,
-        "image": agents.generate_image,
-        "summarize": lambda: agents.summarize_text(truncated_history[-1]['content'] if truncated_history else content),
-        "qna": lambda: agents.answer_question(truncated_history[-1]['content'] if truncated_history else "", content),
-        "chat": lambda: agents.general_chat(full_history)
-    }
+    user_message = request.message
+    session_id = request.session_id
 
-    agent_function = agent_dispatcher.get(task, agent_dispatcher["chat"])
-    
-    try:
-        if task in ["summarize", "qna", "chat"]:
-            response_text = agent_function()
+    # If no session ID is provided, create a new session
+    if not session_id:
+        session_data = new_chat()
+        session_id = session_data["session_id"]
+        new_title = session_data["title"]
+    else:
+        # Fetch the current title of the session to check if it's the default "New Chat"
+        current_session_title = memory.get_session_title(session_id)
+        if current_session_title == "New Chat":
+            new_title = "New Chat" # Keep this flag to trigger title update below
         else:
-            response_text = agent_function(content)
-    except Exception as e:
-        print(f"Agent execution error for task '{task}': {e}")
-        response_text = "I'm sorry, an error occurred while processing your request. Please try again."
+            new_title = None # No need to update title if it's already set
 
-    memory.add_to_history(session_id, "user", request.message)
+
+    # Get chat history for the current session
+    chat_history = memory.get_history(session_id)
+
+    # Prepare history for the agent, ensuring it's in the correct format
+    temp_history_for_agent = [{"role": msg['role'], "content": msg['content']} for msg in chat_history]
+    temp_history_for_agent.append({"role": "user", "content": user_message})
+
+    # Route to appropriate agent
+    task = agents.route_to_agent(user_message, temp_history_for_agent)
+    
+    response_text = ""
+    context = ""
+
+    if task == "summarize":
+        context = temp_history_for_agent[-2]['content'] if len(temp_history_for_agent) > 1 else user_message
+        response_text = agents.summarize_text(context)
+    elif task == "tavily_search":
+        response_text = agents.tavily_search(user_message)
+    elif task == "groq_search":
+        response_text = agents.simple_groq_search(user_message)
+    elif task == "qna":
+        context = temp_history_for_agent[-2]['content'] if len(temp_history_for_agent) > 1 else ""
+        response_text = agents.answer_question(context, user_message)
+    elif task == "code":
+        response_text = agents.generate_code(user_message)
+    elif task == "image":
+        response_text = agents.generate_image(user_message)
+    else: # 'chat' or if routing fails
+        response_text = agents.general_chat(temp_history_for_agent)
+
+    # Save BOTH user message and assistant response to the database
+    memory.add_to_history(session_id, "user", user_message)
     memory.add_to_history(session_id, "assistant", response_text)
 
+    # Update session title if it's a new chat and this is the first interaction
+    if new_title == "New Chat" and user_message:
+        # A simple heuristic: use the first few words of the user's first message as title
+        suggested_title = user_message[:50].strip()
+        if len(user_message) > 50:
+            suggested_title += "..."
+        memory.update_session_title(session_id, suggested_title)
+        new_title = suggested_title # Update new_title to send back to frontend
+
     response_payload = {"response": response_text, "session_id": session_id}
-    if should_update_title and request.message:
-        response_payload["new_title"] = _update_session_title(session_id, request.message)
+    if new_title: # Only include new_title in payload if it was actually updated
+        response_payload["new_title"] = new_title
         
     return response_payload
 
 @app.delete("/api/sessions/{session_id}")
 def delete_session(session_id: str):
-    if not memory.delete_session(session_id):
-        raise HTTPException(status_code=404, detail="Session not found.")
-    return {"message": "Session deleted successfully."}
-
+    """Deletes a chat session by its ID."""
+    if memory.delete_session(session_id):
+        return {"message": "Session deleted successfully."}
+    raise HTTPException(status_code=404, detail="Session not found.")
