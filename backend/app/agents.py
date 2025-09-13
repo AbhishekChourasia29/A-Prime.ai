@@ -45,11 +45,20 @@ Respond with ONLY ONE word from this list: identity, summarize, tavily_search, g
 
 # --- Core Agent Functions ---
 
+def _clean_history_for_groq(history: list[dict]) -> list[dict]:
+    """Removes any keys from the history that are not 'role' or 'content' to comply with the API."""
+    return [{"role": msg.get("role"), "content": msg.get("content")} for msg in history]
+
 def _call_groq(messages, model="gemma2-9b-it"):
-    """Helper function to call the Groq API with robust error handling."""
+    """Helper function to call the Groq API with robust error handling and history cleaning."""
     if not groq_client: raise ValueError("Groq API key is not configured.")
+    
+    # ** THE FIX IS HERE **
+    # Clean the messages to ensure they only have 'role' and 'content' before sending.
+    cleaned_messages = _clean_history_for_groq(messages)
+
     try:
-        return groq_client.chat.completions.create(messages=messages, model=model)
+        return groq_client.chat.completions.create(messages=cleaned_messages, model=model)
     except Exception as e:
         print(f"Groq API call failed: {e}")
         raise
@@ -63,6 +72,8 @@ def answer_identity_question(query: str) -> str:
     ]
     completion = _call_groq(messages)
     return completion.choices[0].message.content
+
+# ... (rest of the agent functions remain the same) ...
 
 def summarize_text(text: str) -> str:
     """Summarizes text using the Groq API."""
@@ -163,7 +174,6 @@ def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str
     try:
         completion = _call_groq(messages)
         task = completion.choices[0].message.content.strip().lower().replace("'", "")
-        # Validate the task from the LLM to prevent unexpected behavior
         valid_tasks = ["summarize", "tavily_search", "groq_search", "qna", "code", "image", "chat"]
         return task if task in valid_tasks else "chat", user_prompt
     except Exception as e:
