@@ -64,7 +64,6 @@ async def chat(request: ChatRequest):
     if not session_id:
         session_data = new_chat()
         session_id = session_data["session_id"]
-        # Use a flag to indicate that the title might need updating
         should_update_title = True
     else:
         current_session_title = memory.get_session_title(session_id)
@@ -75,15 +74,14 @@ async def chat(request: ChatRequest):
     temp_history_for_agent = [{"role": msg['role'], "content": msg['content']} for msg in chat_history]
     temp_history_for_agent.append({"role": "user", "content": user_message})
 
-    # --- UPDATED LOGIC ---
-    # The router now returns both the task and the content to be processed.
+    # --- UPDATED AND CORRECTED LOGIC ---
     task, content = agents.route_to_agent(user_message, temp_history_for_agent)
     
     response_text = ""
 
     if task == "identity":
-        # For the identity task, the content is the full, pre-made response.
-        response_text = content
+        # Call the dedicated identity agent function
+        response_text = agents.answer_identity_question(content)
     elif task == "summarize":
         context_for_summary = temp_history_for_agent[-2]['content'] if len(temp_history_for_agent) > 1 else content
         response_text = agents.summarize_text(context_for_summary)
@@ -126,3 +124,4 @@ def delete_session(session_id: str):
     if memory.delete_session(session_id):
         return {"message": "Session deleted successfully."}
     raise HTTPException(status_code=404, detail="Session not found.")
+
