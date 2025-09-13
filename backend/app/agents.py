@@ -16,7 +16,6 @@ STABILITY_API_BASE_URL = "https://api.stability.ai/v2beta/stable-image/generate/
 # --- Pre-load Identity Context for Performance ---
 IDENTITY_CONTEXT = ""
 def _load_identity_context():
-    """Loads the identity context from the file into memory at startup."""
     global IDENTITY_CONTEXT
     try:
         script_dir = os.path.dirname(__file__)
@@ -53,8 +52,6 @@ def _call_groq(messages, model="gemma2-9b-it"):
     """Helper function to call the Groq API with robust error handling and history cleaning."""
     if not groq_client: raise ValueError("Groq API key is not configured.")
     
-    # ** THE FIX IS HERE **
-    # Clean the messages to ensure they only have 'role' and 'content' before sending.
     cleaned_messages = _clean_history_for_groq(messages)
 
     try:
@@ -72,8 +69,6 @@ def answer_identity_question(query: str) -> str:
     ]
     completion = _call_groq(messages)
     return completion.choices[0].message.content
-
-# ... (rest of the agent functions remain the same) ...
 
 def summarize_text(text: str) -> str:
     """Summarizes text using the Groq API."""
@@ -157,7 +152,6 @@ def generate_image(prompt: str) -> str:
 
 def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str]:
     """Routes the user's prompt to the correct agent using a multi-layer approach."""
-    # --- Layer 1: Deterministic Keyword Triggers ---
     identity_keywords = ["who are you", "your name", "who built you", "who developed you", "creator", "create you", "make you", "about yourself", "your purpose"]
     if any(keyword in user_prompt.lower() for keyword in identity_keywords):
         return "identity", user_prompt
@@ -166,7 +160,6 @@ def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str
     if any(keyword in user_prompt.lower() for keyword in web_search_keywords):
         return "tavily_search", user_prompt
 
-    # --- Layer 2: LLM-based Classification (Fallback) ---
     messages = [
         {"role": "system", "content": SYSTEM_PROMPTS["router"]},
         {"role": "user", "content": user_prompt}
