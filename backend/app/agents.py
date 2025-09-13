@@ -183,7 +183,7 @@ def route_to_agent(user_prompt: str, chat_history: list[dict]) -> tuple[str, str
     """
     # --- Identity Check (Hardcoded for immediate response) ---
     # NOTE: Please replace the placeholder links with the actual URLs.
-    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "who is your creator", "who make you","who create you","who build you", "what's your name", "what is your name"]
+    identity_keywords = ["who are you", "your name", "who built you", "who developed you", "who is your creator"]
     if any(keyword in user_prompt.lower() for keyword in identity_keywords):
         print("--- ROUTER DECISION: 'identity' (Direct Response) ---")
         identity_response = """I am **A-Prime.ai**, a Multi-Agent Assistant.
