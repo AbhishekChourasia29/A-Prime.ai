@@ -74,8 +74,8 @@ async def chat(request: ChatRequest):
         memory.add_to_history(session_id, "assistant", response_text)
         return {"response": response_text, "session_id": session_id}
 
-    # --- PRIMARY FIX: Truncate history before sending to agent ---
-    AGENT_HISTORY_LIMIT = 20
+    # --- PRIMARY FIX: Reduce the agent history limit to prevent token overflow ---
+    AGENT_HISTORY_LIMIT = 10 # Reduced from 20 to 10
     recent_history_for_agent = full_history[-AGENT_HISTORY_LIMIT:]
     agent_context_history = [{"role": msg['role'], "content": msg['content']} for msg in recent_history_for_agent]
 

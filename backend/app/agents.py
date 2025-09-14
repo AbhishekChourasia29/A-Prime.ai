@@ -11,16 +11,10 @@ load_dotenv()
 def load_identity_context():
     """Loads the detailed identity and developer information from the text file using a reliable path."""
     try:
-        # --- START FIX: Build an absolute path to the identity file ---
-        # Get the absolute path to the directory where this script (agents.py) is located.
         script_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Construct the full path to identity_context.txt, which is in the same directory as this script.
         file_path = os.path.join(script_dir, "identity_context.txt")
-        
         with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
-        # --- END FIX ---
     except FileNotFoundError:
         print("WARNING: identity_context.txt not found. The agent will have a limited personality.")
         return "You are A-Prime.ai, a helpful assistant. Your developer is Abhishek Chourasia."
@@ -65,7 +59,6 @@ def _call_groq(messages, model="gemma2-9b-it"):
 def general_chat(chat_history: list[dict]) -> str:
     """Handles general chat queries using the detailed persona from identity_context.txt."""
     print("--- Activating Agent: general_chat (using Groq API) ---")
-    
     system_prompt = f"""
     You are A-Prime.ai. Your entire personality, history, and knowledge about your developer are strictly defined by the context below.
     You must use this information to answer any questions about yourself, your developer (Abhishek Chourasia), your creation, or his projects.
@@ -79,6 +72,13 @@ def general_chat(chat_history: list[dict]) -> str:
     try:
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    # --- START FIX: Catch the specific token limit error ---
+    except groq.BadRequestError as e:
+        if "reduce the length" in str(e).lower():
+            return "The conversation history is too long to process. Please start a new chat."
+        else:
+            return f"Error: The request to the AI was invalid. {e}"
+    # --- END FIX ---
     except Exception as e:
         return f"Error: Could not process chat. {e}"
 
@@ -90,6 +90,11 @@ def summarize_text(chat_history: list[dict]) -> str:
     try:
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    except groq.BadRequestError as e:
+        if "reduce the length" in str(e).lower():
+            return "The conversation is too long to summarize. Please start a new chat."
+        else:
+            return f"Error: The request to the AI was invalid. {e}"
     except Exception as e:
         return f"Error: Could not summarize text. {e}"
 
@@ -114,6 +119,11 @@ def tavily_search(query: str) -> str:
         ]
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    except groq.BadRequestError as e:
+        if "reduce the length" in str(e).lower():
+            return "The search results were too long to process. Please try a more specific query."
+        else:
+            return f"Error: The request to the AI was invalid. {e}"
     except Exception as e:
         return f"Error: Failed to search the web. {e}"
 
@@ -127,6 +137,8 @@ def simple_groq_search(query: str) -> str:
     try:
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    except groq.BadRequestError as e:
+        return f"Error: The request to the AI was invalid. {e}"
     except Exception as e:
         return f"Error: Could not get a response from Groq. {e}"
 
@@ -135,13 +147,16 @@ def answer_question(chat_history: list[dict]) -> str:
     print("--- Activating Agent: answer_question (using Groq API) ---")
     user_query = chat_history[-1]['content']
     context_history = chat_history[:-1]
-    
     system_prompt = "You are a helpful assistant. Answer the user's question based *only* on the provided conversation history."
     messages = [{"role": "system", "content": system_prompt}] + context_history + [{"role": "user", "content": f"Based on our conversation, please answer: {user_query}"}]
-    
     try:
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    except groq.BadRequestError as e:
+        if "reduce the length" in str(e).lower():
+            return "The conversation history is too long to process. Please ask in a new chat."
+        else:
+            return f"Error: The request to the AI was invalid. {e}"
     except Exception as e:
         return f"Error: Could not answer question. {e}"
 
@@ -155,6 +170,11 @@ def generate_code(prompt: str) -> str:
     try:
         completion = _call_groq(messages)
         return completion.choices[0].message.content
+    except groq.BadRequestError as e:
+        if "reduce the length" in str(e).lower():
+            return "The prompt is too long to generate code. Please simplify your request or start a new chat."
+        else:
+            return f"Error: The request to the AI was invalid. {e}"
     except Exception as e:
         return f"Error: Could not generate code. {e}"
 
@@ -191,7 +211,7 @@ def route_to_agent(user_prompt: str) -> str:
     """
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     try:
-        completion = _call_groq(messages, model="gemma2-9b-it")
+        completion = _call_groq(messages, model="llama3-8b-8192")
         task = completion.choices[0].message.content.strip().lower().replace("'", "").replace(".", "")
         print(f"--- ROUTER DECISION: '{task}' ---")
 
