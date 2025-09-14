@@ -7,8 +7,19 @@ from tavily import TavilyClient
 
 load_dotenv()
 
+# --- Load Identity Context ---
+def load_identity_context():
+    """Loads the detailed identity and developer information from the text file."""
+    try:
+        with open("identity_context.txt", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        print("WARNING: identity_context.txt not found. The agent will have a limited personality.")
+        return "You are A-Prime.ai, a helpful assistant. Your developer is Abhishek Chourasia."
+
+IDENTITY_CONTEXT = load_identity_context()
+
 # --- Global API Client Initializations ---
-# Fixed URL formatting
 STABILITY_API_BASE_URL = "https://api.stability.ai/v2beta/stable-image/generate/core"
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
@@ -37,7 +48,6 @@ def _call_groq(messages, model="gemma2-9b-it"):
     """Helper function to call the Groq API."""
     if not groq_client:
         raise Exception("Groq client is not initialized.")
-    # --- ADDED LOGGING ---
     print(f"--- Calling Groq API with model: {model} ---")
     cleaned_messages = _clean_history_for_api(messages)
     return groq_client.chat.completions.create(messages=cleaned_messages, model=model)
@@ -45,18 +55,18 @@ def _call_groq(messages, model="gemma2-9b-it"):
 # --- Agent Functions ---
 
 def general_chat(chat_history: list[dict]) -> str:
-    """Handles general chat queries using a detailed persona."""
-    # --- ADDED LOGGING ---
+    """Handles general chat queries using the detailed persona from identity_context.txt."""
     print("--- Activating Agent: general_chat (using Groq API) ---")
-    # Fixed URL formatting in prompt
-    system_prompt = """
-    You are **A-Prime.ai**, a helpful and professional Multi-Agent Assistant.
-    Your developer is **Abhishek Chourasia**.
-    Answer the user's questions. Be friendly, professional, and concise. Format your responses clearly using **markdown**.
+    
+    # --- IMPROVEMENT: Persona is now loaded from the text file ---
+    system_prompt = f"""
+    You are A-Prime.ai. Your entire personality, history, and knowledge about your developer are strictly defined by the context below.
+    You must use this information to answer any questions about yourself, your developer (Abhishek Chourasia), your creation, or his projects.
+    Be friendly, professional, and format your responses clearly using markdown. Do not go beyond the information provided.
 
-    When asked for links, always provide these specific ones:
-    - LinkedIn: https://www.linkedin.com/in/abhishek291203/
-    - Portfolio: https://abhishekchourasia29.github.io/resume.ai/
+    --- IDENTITY CONTEXT ---
+    {IDENTITY_CONTEXT}
+    --- END CONTEXT ---
     """
     messages = [{"role": "system", "content": system_prompt}] + chat_history
     try:
@@ -67,7 +77,6 @@ def general_chat(chat_history: list[dict]) -> str:
 
 def summarize_text(chat_history: list[dict]) -> str:
     """Summarizes the preceding conversation."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: summarize_text (using Groq API) ---")
     system_prompt = "You are a helpful assistant. Concisely summarize the key points of the preceding conversation."
     messages = [{"role": "system", "content": system_prompt}] + chat_history
@@ -79,7 +88,6 @@ def summarize_text(chat_history: list[dict]) -> str:
 
 def tavily_search(query: str) -> str:
     """Searches the web using Tavily and synthesizes an answer with Groq."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: tavily_search (using Tavily API and Groq API) ---")
     if not tavily_client:
         return "Error: Tavily API Key is not configured for web search."
@@ -104,7 +112,6 @@ def tavily_search(query: str) -> str:
 
 def simple_groq_search(query: str) -> str:
     """Answers a question from Groq's internal knowledge."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: simple_groq_search (using Groq API) ---")
     messages = [
         {"role": "system", "content": "You are a helpful assistant. Answer the question concisely from your existing knowledge."},
@@ -118,7 +125,6 @@ def simple_groq_search(query: str) -> str:
 
 def answer_question(chat_history: list[dict]) -> str:
     """Answers a question based on the preceding conversation context."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: answer_question (using Groq API) ---")
     user_query = chat_history[-1]['content']
     context_history = chat_history[:-1]
@@ -134,7 +140,6 @@ def answer_question(chat_history: list[dict]) -> str:
 
 def generate_code(prompt: str) -> str:
     """Generates code using a specialized prompt."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: generate_code (using Groq API) ---")
     messages = [
         {"role": "system", "content": "You are a helpful assistant that generates clean, efficient, and well-commented code. Provide the code within a single triple-backticked block (e.g., ```python)."},
@@ -148,7 +153,6 @@ def generate_code(prompt: str) -> str:
 
 def generate_image(prompt: str) -> str:
     """Generates an image using the Stability AI API."""
-    # --- ADDED LOGGING ---
     print("--- Activating Agent: generate_image (using Stability AI API) ---")
     if not STABILITY_API_KEY:
         return "Error: Stability AI API key not found. Image generation is disabled."
@@ -166,7 +170,6 @@ def generate_image(prompt: str) -> str:
 
 def route_to_agent(user_prompt: str) -> str:
     """Routes the user's prompt to the appropriate agent using an efficient LLM call."""
-    # --- ADDED LOGGING ---
     print("--- Activating Router Agent ---")
     system_prompt = """
     You are an extremely efficient routing assistant. Your only purpose is to analyze a user's prompt and classify it into exactly one of the following single-word categories:
@@ -176,12 +179,12 @@ def route_to_agent(user_prompt: str) -> str:
     'qna' - For questions that refer to information already given in the conversation history.
     'code' - For requests to generate or explain programming code.
     'image' - For requests to generate an image.
-    'chat' - For general conversation, greetings, or unclear requests.
+    'chat' - For general conversation, greetings, asking about the developer, or unclear requests.
     Respond with ONLY ONE SINGLE WORD. Do not add explanations or punctuation.
     """
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
     try:
-        completion = _call_groq(messages, model="gemma2-9b-it") # Use a fast model for routing
+        completion = _call_groq(messages, model="llama3-8b-8192")
         task = completion.choices[0].message.content.strip().lower().replace("'", "").replace(".", "")
         print(f"--- ROUTER DECISION: '{task}' ---")
 
@@ -189,7 +192,6 @@ def route_to_agent(user_prompt: str) -> str:
         if task in valid_tasks:
             return task
         
-        # Fallback logic if LLM returns an invalid task
         print(f"LLM returned invalid task: '{task}'. Using keyword-based fallback.")
         prompt_lower = user_prompt.lower()
         if "image" in prompt_lower: return "image"

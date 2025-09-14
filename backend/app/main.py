@@ -36,8 +36,6 @@ def new_chat():
 def get_chat_history(session_id: str):
     """Gets the chat history for a specific session."""
     history = memory.get_history(session_id)
-    # --- IMPROVEMENT: No more string parsing needed here ---
-    # The frontend expects 'text', so we map 'content' to 'text'.
     formatted_history = []
     for msg in history:
         formatted_msg = {
@@ -45,7 +43,6 @@ def get_chat_history(session_id: str):
             "role": msg.get('role'),
             "text": msg.get('content'),
             "timestamp": msg.get('timestamp'),
-            # Directly use the pre-calculated flags from the database
             "isImage": msg.get('is_image', False),
             "isCode": msg.get('is_code', False)
         }
@@ -61,27 +58,31 @@ async def chat(request: ChatRequest):
     if not session_id:
         session_data = new_chat()
         session_id = session_data["session_id"]
-        # Flag to create a title after the first message
         new_title = "New Chat"
     elif memory.get_session_title(session_id) == "New Chat":
         new_title = "New Chat"
 
-    # Save user message to DB immediately
+    # Save user message to DB immediately, so it's always recorded
     memory.add_to_history(session_id, "user", user_message)
 
-    # --- PRIMARY FIX: Truncate history before sending to agent ---
+    # --- NEW: Check for conversation length limit ---
     full_history = memory.get_history(session_id)
+    SESSION_MESSAGE_LIMIT = 50 
+
+    if len(full_history) >= SESSION_MESSAGE_LIMIT:
+        response_text = "This conversation has reached its length limit. Please start a new chat to continue."
+        memory.add_to_history(session_id, "assistant", response_text)
+        return {"response": response_text, "session_id": session_id}
+
+    # --- PRIMARY FIX: Truncate history before sending to agent ---
     AGENT_HISTORY_LIMIT = 20
-    # Get the last N messages for the agent's context
     recent_history_for_agent = full_history[-AGENT_HISTORY_LIMIT:]
-    # Format for the agent
     agent_context_history = [{"role": msg['role'], "content": msg['content']} for msg in recent_history_for_agent]
 
-    # Route to appropriate agent using only the latest user prompt for efficiency
+    # Route to appropriate agent
     task = agents.route_to_agent(user_message)
     
     response_text = ""
-    # --- IMPROVEMENT: Pass the truncated history to context-aware agents ---
     if task == "summarize":
         response_text = agents.summarize_text(agent_context_history)
     elif task == "tavily_search":
@@ -118,3 +119,4 @@ def delete_session(session_id: str):
     if memory.delete_session(session_id):
         return {"message": "Session deleted successfully."}
     raise HTTPException(status_code=404, detail="Session not found.")
+
