@@ -9,10 +9,18 @@ load_dotenv()
 
 # --- Load Identity Context ---
 def load_identity_context():
-    """Loads the detailed identity and developer information from the text file."""
+    """Loads the detailed identity and developer information from the text file using a reliable path."""
     try:
-        with open("identity_context.txt", "r", encoding="utf-8") as f:
+        # --- START FIX: Build an absolute path to the identity file ---
+        # Get the absolute path to the directory where this script (agents.py) is located.
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Construct the full path to identity_context.txt, which is in the same directory as this script.
+        file_path = os.path.join(script_dir, "identity_context.txt")
+        
+        with open(file_path, "r", encoding="utf-8") as f:
             return f.read()
+        # --- END FIX ---
     except FileNotFoundError:
         print("WARNING: identity_context.txt not found. The agent will have a limited personality.")
         return "You are A-Prime.ai, a helpful assistant. Your developer is Abhishek Chourasia."
@@ -58,7 +66,6 @@ def general_chat(chat_history: list[dict]) -> str:
     """Handles general chat queries using the detailed persona from identity_context.txt."""
     print("--- Activating Agent: general_chat (using Groq API) ---")
     
-    # --- IMPROVEMENT: Persona is now loaded from the text file ---
     system_prompt = f"""
     You are A-Prime.ai. Your entire personality, history, and knowledge about your developer are strictly defined by the context below.
     You must use this information to answer any questions about yourself, your developer (Abhishek Chourasia), your creation, or his projects.
